@@ -7,10 +7,12 @@ import { BatchPanel } from './components/BatchPanel';
 import { readExif } from './lib/exif';
 import { canUse } from './lib/entitlements';
 import { renderComposite, loadImage, canvasToBlob } from './lib/render';
-import { Upload, Download, ImageIcon, RotateCcw, Trash2, Share2 } from 'lucide-react';
+import { OutputPanel } from './components/OutputPanel';
+import { DEFAULT_OUTPUT, applyOutput, outputMime, outputExt, JPEG_QUALITY, renderCompare } from './lib/output';
+import { Columns2, Upload, Download, ImageIcon, RotateCcw, Trash2, Share2 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type TabId = 'info' | 'retouch' | 'frame' | 'logo';
+type TabId = 'info' | 'retouch' | 'frame' | 'logo' | 'output';
 
 interface ImageInfo {
   name: string; sizeKb: number; width: number; height: number; type: string;
@@ -89,6 +91,7 @@ export function ImageEditor() {
   const [exifLoading,   setExifLoading]   = useState(false);
   const [openColor,     setOpenColor]     = useState<string|null>(null);
   const [comparing, setComparing] = useState(false);
+  const [output, setOutput] = useState(DEFAULT_OUTPUT);
   const [retouch, setRetouch] = useState(DEFAULT_RETOUCH);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [logoImage, setLogoImage] = useState<HTMLImageElement | null>(null);
@@ -105,12 +108,17 @@ export function ImageEditor() {
   useEffect(() => {
     if (!imageSrc || !image || !canvasRef.current) return;
     const id = requestAnimationFrame(() => {
-      if (canvasRef.current) renderComposite(canvasRef.current, {
-        img: image, retouch: comparing ? DEFAULT_RETOUCH : retouch, frame, logoImg: logo.src ? logoImage : null, logo, maxEdge: 1600,
-      });
+      if (!canvasRef.current) return;
+      const source = document.createElement('canvas');
+      renderComposite(source, { img: image, retouch: comparing ? DEFAULT_RETOUCH : retouch, frame, logoImg: logo.src ? logoImage : null, logo, maxEdge: 1600 });
+      const result = applyOutput(source, { ...output, size: 'original' }, frame.style === 'none' ? null : frame.bgColor);
+      canvasRef.current.width = result.width;
+      canvasRef.current.height = result.height;
+      canvasRef.current.getContext('2d')?.drawImage(result, 0, 0);
+      source.width = source.height = result.width = result.height = 0;
     });
     return () => cancelAnimationFrame(id);
-  }, [imageSrc, image, retouch, frame, logo, logoImage, comparing]);
+  }, [imageSrc, image, retouch, frame, logo, logoImage, comparing, output]);
 
   // ── File handler with EXIF ──────────────────────────────────────────────────
   const loadImg = async (file: File) => {
@@ -158,7 +166,9 @@ export function ImageEditor() {
     const canvas = document.createElement('canvas');
     try {
       renderComposite(canvas, { img: image, retouch, frame, logoImg: logo.src ? logoImage : null, logo });
-      return await canvasToBlob(canvas, 'image/png');
+      const result = applyOutput(canvas, output, frame.style === 'none' ? null : frame.bgColor);
+      try { return await canvasToBlob(result, outputMime(output), JPEG_QUALITY); }
+      finally { result.width = result.height = 0; }
     } finally {
       canvas.width = canvas.height = 0;
     }
@@ -170,15 +180,42 @@ export function ImageEditor() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = imgInfo ? `edited_${imgInfo.name.replace(/\.[^.]+$/,'.png')}` : 'edited.png';
+    a.download = `edited_${imgInfo?.name.replace(/\.[^.]+$/, '') ?? 'photo'}.${outputExt(output)}`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const saveCompare = async () => {
+    if (!image) return;
+    if (!canUse('compare')) {
+      alert('この機能は有料版で利用できます');
+      return;
+    }
+    const before = document.createElement('canvas');
+    const after = document.createElement('canvas');
+    let result: HTMLCanvasElement | null = null;
+    try {
+      const input = { img: image, frame: { ...frame, style: 'none' as const }, logoImg: logo.src ? logoImage : null, logo, maxEdge: 2048 };
+      renderComposite(before, { ...input, retouch: DEFAULT_RETOUCH });
+      renderComposite(after, { ...input, retouch });
+      result = renderCompare(before, after);
+      const blob = await canvasToBlob(result, 'image/jpeg', JPEG_QUALITY);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `compare_${imgInfo?.name.replace(/\.[^.]+$/, '') ?? 'photo'}.jpg`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      before.width = before.height = after.width = after.height = 0;
+      if (result) result.width = result.height = 0;
+    }
   };
 
   const shareToSNS = async () => {
     const blob = await makeBlob();
     if (!blob) return;
-    const file = new File([blob], 'photo.png', { type: 'image/png' });
+    const file = new File([blob], `edited_${imgInfo?.name.replace(/\.[^.]+$/, '') ?? 'photo'}.${outputExt(output)}`, { type: outputMime(output) });
     try {
       if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file] });
       else if ('share' in navigator) await navigator.share({ title: 'Photo' });
@@ -191,7 +228,7 @@ export function ImageEditor() {
     setImage(null);
     setComparing(false);
     setImageSrc(null); setImgInfo(null);
-    setFrame(DEFAULT_FRAME); setLogo(DEFAULT_LOGO); setRetouch(DEFAULT_RETOUCH);
+    setFrame(DEFAULT_FRAME); setLogo(DEFAULT_LOGO); setRetouch(DEFAULT_RETOUCH); setOutput(DEFAULT_OUTPUT);
     if (fileRef.current) fileRef.current.value='';
     if (logoRef.current) logoRef.current.value='';
   };
@@ -220,7 +257,7 @@ export function ImageEditor() {
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   const TABS: {id:TabId;label:string}[] = [
-    {id:'info',label:'情報'},{id:'retouch',label:'補正'},{id:'frame',label:'フレーム'},{id:'logo',label:'ロゴ'},
+    {id:'info',label:'情報'},{id:'retouch',label:'補正'},{id:'frame',label:'フレーム'},{id:'logo',label:'ロゴ'},{id:'output',label:'書き出し'},
   ];
 
   const STYLES: [FrameStyle,string,string][] = [
@@ -260,20 +297,21 @@ export function ImageEditor() {
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files?.[0];if(f)loadImg(f);}}/>
         </div>
 
-        <BatchPanel retouch={retouch} frame={frame} logo={logo} logoImg={logo.src ? logoImage : null}/>
+        <BatchPanel output={output} retouch={retouch} frame={frame} logo={logo} logoImg={logo.src ? logoImage : null}/>
 
         {/* Tabs */}
         <div className="bg-card/50 backdrop-blur-sm border border-border/50 rounded-2xl overflow-hidden">
           <div className="flex border-b border-border/50">
             {TABS.map(t=>(
               <button key={t.id} onClick={()=>setTab(t.id)}
-                className={`flex-1 py-2.5 text-xs font-bold transition-colors ${tab===t.id?'bg-primary/10 text-primary border-b-2 border-primary':'text-muted-foreground hover:text-foreground hover:bg-secondary/40'}`}>
+                className={`flex-1 py-2.5 text-xs whitespace-nowrap font-bold transition-colors ${tab===t.id?'bg-primary/10 text-primary border-b-2 border-primary':'text-muted-foreground hover:text-foreground hover:bg-secondary/40'}`}>
                 {t.label}
               </button>
             ))}
           </div>
 
           <div className="p-5">
+            {tab==='output' && <OutputPanel value={output} onChange={setOutput} hasFrame={frame.style !== 'none'}/>}
             {/* 情報 */}
             {tab==='info' && (
               imgInfo ? (
@@ -502,6 +540,10 @@ export function ImageEditor() {
               <Share2 size={14}/> 共有
             </button>
           )}
+          <button onClick={saveCompare} disabled={!imageSrc || isDefaultRetouch(retouch)} title="ビフォーアフター画像を保存"
+            className="px-3 py-3 rounded-xl border border-border/50 bg-secondary/50 disabled:opacity-40">
+            <Columns2 size={14}/>
+          </button>
           <button onClick={download} disabled={!imageSrc}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             <Download size={14}/> 保存

@@ -3,9 +3,12 @@ import type { FrameConfig, LogoConfig } from './frame';
 import { analyzeAuto } from './retouch';
 import type { RetouchSettings } from './retouch';
 import { canvasToBlob, loadImage, renderComposite } from './render';
+import { applyOutput, outputMime, outputExt, JPEG_QUALITY } from './output';
+import type { OutputSettings } from './output';
 import { readExif } from './exif';
 
 export interface BatchOptions {
+  output: OutputSettings;
   retouch: RetouchSettings;
   autoPerPhoto: boolean;
   frame: FrameConfig;
@@ -46,11 +49,15 @@ export async function runBatch(files: File[], opts: BatchOptions,
       }
       const frame = opts.useExifPerPhoto ? { ...opts.frame, ...await readExif(file) } : opts.frame;
       renderComposite(canvas, { img, retouch, frame, logoImg: opts.logoImg, logo: opts.logo });
-      const blob = await canvasToBlob(canvas, 'image/jpeg', 0.92);
+      const result = applyOutput(canvas, opts.output, frame.style === 'none' ? null : frame.bgColor);
+      let blob: Blob;
+      try { blob = await canvasToBlob(result, outputMime(opts.output), JPEG_QUALITY); }
+      finally { result.width = result.height = 0; }
+      const ext = outputExt(opts.output);
       const base = `edited_${file.name.replace(/\.[^.]+$/, '')}`;
-      let name = `${base}.jpg`;
+      let name = `${base}.${ext}`;
       let n = 2;
-      while (names.has(name)) name = `${base}_${n++}.jpg`;
+      while (names.has(name)) name = `${base}_${n++}.${ext}`;
       names.add(name);
       entries[name] = new Uint8Array(await blob.arrayBuffer());
     } catch {
