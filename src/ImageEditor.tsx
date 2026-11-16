@@ -1,8 +1,10 @@
 import { useRef, useState, useEffect } from 'react';
-import { DEFAULT_FRAME, DEFAULT_LOGO, STYLE_DEFAULTS, fmtExp, fmtF, todayStr } from './lib/frame';
+import { DEFAULT_FRAME, DEFAULT_LOGO, STYLE_DEFAULTS, todayStr } from './lib/frame';
 import type { FrameConfig, FramePos, FrameStyle, LogoConfig } from './lib/frame';
 import { DEFAULT_RETOUCH, isDefaultRetouch, analyzeAuto } from './lib/retouch';
 import { RetouchPanel } from './components/RetouchPanel';
+import { BatchPanel } from './components/BatchPanel';
+import { readExif } from './lib/exif';
 import { canUse } from './lib/entitlements';
 import { renderComposite, loadImage, canvasToBlob } from './lib/render';
 import { Upload, Download, ImageIcon, RotateCcw, Trash2, Share2 } from 'lucide-react';
@@ -117,43 +119,11 @@ export function ImageEditor() {
 
     if (file.type === 'image/jpeg' || file.type === 'image/tiff') {
       setExifLoading(true);
-      try {
-        const exifr = (await import('exifr')).default;
-        const exif = await exifr.parse(file, {
-          pick: ['Make','Model','LensModel','Lens','FNumber','ExposureTime','ISO','DateTimeOriginal'],
-        });
-        if (sequence !== loadSequence.current) return;
-        if (exif) {
-          const parts = [
-            exif.FNumber ? fmtF(exif.FNumber) : '',
-            exif.ExposureTime ? fmtExp(exif.ExposureTime) : '',
-            exif.ISO ? `ISO ${exif.ISO}` : '',
-          ].filter(Boolean);
-
-          let dateStr = todayStr;
-          if (exif.DateTimeOriginal) {
-            const d = new Date(exif.DateTimeOriginal);
-            if (!isNaN(d.getTime())) {
-              dateStr = `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
-            }
-          }
-
-          const make  = String(exif.Make  || '').trim();
-          const model = String(exif.Model || '').trim();
-          const camModel = (make && model && model.toLowerCase().startsWith(make.toLowerCase()))
-            ? model
-            : [make, model].filter(Boolean).join(' ').trim();
-          const lensRaw = exif.LensModel || exif.Lens;
-
-          setFrame(f => ({
-            ...f,
-            cameraModel: camModel || f.cameraModel,
-            lensName:    lensRaw  ? String(lensRaw).trim() : f.lensName,
-            shootInfo:   parts.length ? parts.join('  ')   : f.shootInfo,
-            shootDate:   dateStr,
-          }));
-        }
-      } catch { /* no EXIF */ }
+      const fields = await readExif(file);
+      if (sequence !== loadSequence.current) return;
+      if (Object.keys(fields).length) {
+        setFrame(f => ({ ...f, ...fields, shootDate: fields.shootDate ?? todayStr }));
+      }
       if (sequence !== loadSequence.current) return;
       setExifLoading(false);
     }
@@ -289,6 +259,8 @@ export function ImageEditor() {
           </div>
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>{const f=e.target.files?.[0];if(f)loadImg(f);}}/>
         </div>
+
+        <BatchPanel retouch={retouch} frame={frame} logo={logo} logoImg={logo.src ? logoImage : null}/>
 
         {/* Tabs */}
         <div className="bg-card/50 backdrop-blur-sm border border-border/50 rounded-2xl overflow-hidden">
