@@ -118,7 +118,7 @@ export function applyRetouch(data: ImageData, s: RetouchSettings): void; // data
   - `temperature = clamp(round(125 * (mb - mr) / avg), -50, 50)`
   - `tint = clamp(round(333 * (mg - (mr+mb)/2) / avg), -40, 40)`
 - レベル適用後の平均輝度 `mL = mean((L - blackPoint)/(whitePoint - blackPoint))`(0..1 にクランプ)
-  - `exposure = clamp(round(60 * log2(0.46 / max(mL, 0.01))), -60, 60)`
+  - `exposure = clamp(round(60 * log2(clamp(mL, 0.35, 0.65) / max(mL, 0.01))), -30, 60)`(平均が 0.35〜0.65 の範囲なら動かさない。白背景の写真などを暗くしすぎないよう、マイナス側は -30 まで。2026-11-16 のブラウザ確認で変更)
 - 輝度の標準偏差が 0.18 未満なら `contrast = 15`、それ以外 0
 - `p10 < 0.08` なら `shadows = 20`、それ以外 0
 - `p95 > 0.97` なら `highlights = -20`、それ以外 0
