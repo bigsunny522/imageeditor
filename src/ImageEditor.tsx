@@ -6,7 +6,7 @@ import { RetouchPanel } from './components/RetouchPanel';
 import { BatchPanel } from './components/BatchPanel';
 import { readExif } from './lib/exif';
 import { canUse } from './lib/entitlements';
-import { renderComposite, loadImage, canvasToBlob } from './lib/render';
+import { renderComposite, loadImage, loadScaled, canvasToBlob } from './lib/render';
 import { OutputPanel } from './components/OutputPanel';
 import { DEFAULT_OUTPUT, applyOutput, outputMime, outputExt, JPEG_QUALITY, renderCompare } from './lib/output';
 import { Columns2, Upload, Download, ImageIcon, RotateCcw, Trash2, Share2 } from 'lucide-react';
@@ -79,9 +79,10 @@ export function ImageEditor() {
   const loadSequence = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileRef   = useRef<HTMLInputElement>(null);
+  const photoRef = useRef<File | null>(null);
+  const imageRef = useRef<HTMLCanvasElement | null>(null);
   const logoRef   = useRef<HTMLInputElement>(null);
 
-  const [imageSrc, setImageSrc] = useState<string|null>(null);
   const [imgInfo,  setImgInfo]  = useState<ImageInfo|null>(null);
   const [frame,    setFrame]    = useState<FrameConfig>(DEFAULT_FRAME);
   const [logo,     setLogo]     = useState<LogoConfig>(DEFAULT_LOGO);
@@ -93,7 +94,7 @@ export function ImageEditor() {
   const [comparing, setComparing] = useState(false);
   const [output, setOutput] = useState(DEFAULT_OUTPUT);
   const [retouch, setRetouch] = useState(DEFAULT_RETOUCH);
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [image, setImage] = useState<HTMLCanvasElement | null>(null);
   const [logoImage, setLogoImage] = useState<HTMLImageElement | null>(null);
   const shareSupported = typeof navigator !== 'undefined' && 'share' in navigator;
 
@@ -106,7 +107,7 @@ export function ImageEditor() {
   }, [logo.src]);
 
   useEffect(() => {
-    if (!imageSrc || !image || !canvasRef.current) return;
+    if (!image || !canvasRef.current) return;
     const id = requestAnimationFrame(() => {
       if (!canvasRef.current) return;
       const source = document.createElement('canvas');
@@ -115,10 +116,11 @@ export function ImageEditor() {
       canvasRef.current.width = result.width;
       canvasRef.current.height = result.height;
       canvasRef.current.getContext('2d')?.drawImage(result, 0, 0);
-      source.width = source.height = result.width = result.height = 0;
+      if (result !== source) result.width = result.height = 0;
+      source.width = source.height = 0;
     });
     return () => cancelAnimationFrame(id);
-  }, [imageSrc, image, retouch, frame, logo, logoImage, comparing, output]);
+  }, [image, retouch, frame, logo, logoImage, comparing, output]);
 
   // ── File handler with EXIF ──────────────────────────────────────────────────
   const loadImg = async (file: File) => {
@@ -136,17 +138,16 @@ export function ImageEditor() {
       setExifLoading(false);
     }
 
-    const r = new FileReader();
-    r.onload = e => {
-      const src = e.target?.result as string;
-      loadImage(src).then(i => {
-        if (sequence !== loadSequence.current) return;
-        setImage(i);
-        setImageSrc(src);
-        setImgInfo({ name:file.name, sizeKb:Math.round(file.size/1024), width:i.width, height:i.height, type:file.type });
-      });
-    };
-    r.readAsDataURL(file);
+    const scaled = await loadScaled(file, 2048);
+    if (sequence !== loadSequence.current) {
+      scaled.canvas.width = scaled.canvas.height = 0;
+      return;
+    }
+    if (imageRef.current) imageRef.current.width = imageRef.current.height = 0;
+    imageRef.current = scaled.canvas;
+    photoRef.current = file;
+    setImage(scaled.canvas);
+    setImgInfo({ name:file.name, sizeKb:Math.round(file.size/1024), width:scaled.width, height:scaled.height, type:file.type });
     setTab('info');
   };
 
@@ -158,19 +159,25 @@ export function ImageEditor() {
   };
 
   const makeBlob = async () => {
-    if (!image) return null;
+    const file = photoRef.current;
+    if (!file) return null;
     if (!isDefaultRetouch(retouch) && !canUse('retouch')) {
       alert('この機能は有料版で利用できます');
       return null;
     }
     const canvas = document.createElement('canvas');
+    const url = URL.createObjectURL(file);
+    let img: HTMLImageElement | null = null;
     try {
-      renderComposite(canvas, { img: image, retouch, frame, logoImg: logo.src ? logoImage : null, logo });
+      img = await loadImage(url);
+      renderComposite(canvas, { img, retouch, frame, logoImg: logo.src ? logoImage : null, logo });
       const result = applyOutput(canvas, output, frame.style === 'none' ? null : frame.bgColor);
       try { return await canvasToBlob(result, outputMime(output), JPEG_QUALITY); }
-      finally { result.width = result.height = 0; }
+      finally { if (result !== canvas) result.width = result.height = 0; }
     } finally {
       canvas.width = canvas.height = 0;
+      if (img) img.src = '';
+      URL.revokeObjectURL(url);
     }
   };
 
@@ -225,9 +232,12 @@ export function ImageEditor() {
   const reset = () => {
     loadSequence.current++;
     setExifLoading(false);
+    if (imageRef.current) imageRef.current.width = imageRef.current.height = 0;
+    imageRef.current = null;
+    photoRef.current = null;
     setImage(null);
     setComparing(false);
-    setImageSrc(null); setImgInfo(null);
+    setImgInfo(null);
     setFrame(DEFAULT_FRAME); setLogo(DEFAULT_LOGO); setRetouch(DEFAULT_RETOUCH); setOutput(DEFAULT_OUTPUT);
     if (fileRef.current) fileRef.current.value='';
     if (logoRef.current) logoRef.current.value='';
@@ -239,7 +249,7 @@ export function ImageEditor() {
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(image.width * scale));
     canvas.height = Math.max(1, Math.round(image.height * scale));
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     const adjust = analyzeAuto(ctx.getImageData(0, 0, canvas.width, canvas.height));
@@ -342,7 +352,7 @@ export function ImageEditor() {
             )}
 
             {tab==='retouch' && (
-              <RetouchPanel value={retouch} onChange={setRetouch} onAuto={autoRetouch} disabled={!imageSrc}/>
+              <RetouchPanel value={retouch} onChange={setRetouch} onAuto={autoRetouch} disabled={!image}/>
             )}
 
             {/* フレーム */}
@@ -502,21 +512,30 @@ export function ImageEditor() {
       <div className="bg-card/50 backdrop-blur-sm border border-border/50 rounded-2xl p-5 min-h-[500px] flex flex-col">
         <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4 flex items-center gap-2">
           プレビュー
-          {imageSrc && !isDefaultRetouch(retouch) && (
+          {image && !isDefaultRetouch(retouch) && (
             <button className="ml-auto px-2 py-1 rounded-lg bg-secondary/50 text-xs"
               onPointerDown={() => setComparing(true)} onPointerUp={() => setComparing(false)}
               onPointerLeave={() => setComparing(false)} onPointerCancel={() => setComparing(false)}>
               元画像
             </button>
           )}
-          {imageSrc&&(
-            <button onClick={()=>{loadSequence.current++;setImage(null);setComparing(false);setImageSrc(null);setImgInfo(null);if(fileRef.current)fileRef.current.value='';}}
+          {image&&(
+            <button onClick={() => {
+              loadSequence.current++;
+              if (imageRef.current) imageRef.current.width = imageRef.current.height = 0;
+              imageRef.current = null;
+              photoRef.current = null;
+              setImage(null);
+              setComparing(false);
+              setImgInfo(null);
+              if (fileRef.current) fileRef.current.value = '';
+            }}
               className={`${isDefaultRetouch(retouch) ? 'ml-auto' : ''} p-1.5 rounded-lg hover:bg-secondary/70 text-muted-foreground hover:text-foreground transition-colors`}>
               <Trash2 size={12}/>
             </button>
           )}
         </p>
-        {imageSrc ? (
+        {image ? (
           <div className="flex-1 flex items-center justify-center rounded-xl overflow-auto"
             style={{backgroundImage:'repeating-conic-gradient(#80808018 0% 25%,transparent 0% 50%)',backgroundSize:'16px 16px'}}>
             <canvas ref={canvasRef} className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-xl"/>
@@ -535,16 +554,16 @@ export function ImageEditor() {
             <RotateCcw size={13}/>
           </button>
           {shareSupported&&(
-            <button onClick={shareToSNS} disabled={!imageSrc}
+            <button onClick={shareToSNS} disabled={!image}
               className="flex items-center gap-2 px-4 py-3 rounded-xl border border-border/50 bg-secondary/50 hover:bg-secondary text-sm font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
               <Share2 size={14}/> 共有
             </button>
           )}
-          <button onClick={saveCompare} disabled={!imageSrc || isDefaultRetouch(retouch)} title="ビフォーアフター画像を保存"
+          <button onClick={saveCompare} disabled={!image || isDefaultRetouch(retouch)} title="ビフォーアフター画像を保存"
             className="px-3 py-3 rounded-xl border border-border/50 bg-secondary/50 disabled:opacity-40">
             <Columns2 size={14}/>
           </button>
-          <button onClick={download} disabled={!imageSrc}
+          <button onClick={download} disabled={!image}
             className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary text-primary-foreground text-sm font-bold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             <Download size={14}/> 保存
           </button>

@@ -35,14 +35,15 @@ export async function runBatch(files: File[], opts: BatchOptions,
     const url = URL.createObjectURL(file);
     const canvas = document.createElement('canvas');
     const sample = document.createElement('canvas');
+    let img: HTMLImageElement | null = null;
     try {
-      const img = await loadImage(url);
+      img = await loadImage(url);
       let retouch = opts.retouch;
       if (opts.autoPerPhoto) {
         const scale = Math.min(1, 512 / Math.max(img.width, img.height));
         sample.width = Math.max(1, Math.round(img.width * scale));
         sample.height = Math.max(1, Math.round(img.height * scale));
-        const ctx = sample.getContext('2d');
+        const ctx = sample.getContext('2d', { willReadFrequently: true });
         if (!ctx) throw new Error('Canvas unavailable');
         ctx.drawImage(img, 0, 0, sample.width, sample.height);
         retouch = { ...retouch, adjust: analyzeAuto(ctx.getImageData(0, 0, sample.width, sample.height)) };
@@ -52,7 +53,7 @@ export async function runBatch(files: File[], opts: BatchOptions,
       const result = applyOutput(canvas, opts.output, frame.style === 'none' ? null : frame.bgColor);
       let blob: Blob;
       try { blob = await canvasToBlob(result, outputMime(opts.output), JPEG_QUALITY); }
-      finally { result.width = result.height = 0; }
+      finally { if (result !== canvas) result.width = result.height = 0; }
       const ext = outputExt(opts.output);
       const base = `edited_${file.name.replace(/\.[^.]+$/, '')}`;
       let name = `${base}.${ext}`;
@@ -65,6 +66,7 @@ export async function runBatch(files: File[], opts: BatchOptions,
     } finally {
       canvas.width = canvas.height = 0;
       sample.width = sample.height = 0;
+      if (img) img.src = '';
       URL.revokeObjectURL(url);
     }
   }

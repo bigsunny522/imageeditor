@@ -1,10 +1,10 @@
 import { getPad, renderFrame } from './frame';
 import type { FrameConfig, LogoConfig } from './frame';
-import { applyRetouch } from './retouch';
+import { applyRetouch, isDefaultRetouch } from './retouch';
 import type { RetouchSettings } from './retouch';
 
 export interface RenderInput {
-  img: HTMLImageElement;
+  img: CanvasImageSource & { width: number; height: number };
   retouch: RetouchSettings;
   frame: FrameConfig;
   logoImg: HTMLImageElement | null;
@@ -21,13 +21,17 @@ export function renderComposite(target: HTMLCanvasElement, input: RenderInput): 
   work.width = w;
   work.height = h;
   try {
-    const ctx = work.getContext('2d');
+    const ctx = work.getContext('2d', { willReadFrequently: true });
     const out = target.getContext('2d');
     if (!ctx || !out) return;
     ctx.drawImage(img, 0, 0, w, h);
-    const data = ctx.getImageData(0, 0, w, h);
-    applyRetouch(data, retouch);
-    ctx.putImageData(data, 0, 0);
+    if (!isDefaultRetouch(retouch)) {
+      for (let y = 0; y < h; y += 256) {
+        const data = ctx.getImageData(0, y, w, Math.min(256, h - y));
+        applyRetouch(data, retouch);
+        ctx.putImageData(data, 0, y);
+      }
+    }
     const pad = getPad(w, h, frame.style, frame.pos);
     const totalW = w + pad.left + pad.right;
     const totalH = h + pad.top + pad.bottom;
@@ -49,6 +53,27 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = reject;
     img.src = src;
   });
+}
+
+export async function loadScaled(file: Blob, maxEdge: number): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
+  const url = URL.createObjectURL(file);
+  let img: HTMLImageElement | null = null;
+  try {
+    img = await loadImage(url);
+    const { width, height } = img;
+    const scale = Math.min(1, maxEdge / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas unavailable');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return { canvas, width, height };
+  } finally {
+    if (img) img.src = '';
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function canvasToBlob(c: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {

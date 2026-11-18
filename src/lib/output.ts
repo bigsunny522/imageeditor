@@ -17,6 +17,7 @@ export function applyOutput(src: HTMLCanvasElement, s: OutputSettings, frameBg: 
     else height = Math.round(width * h / w);
   }
   const scale = s.size === 'original' ? 1 : Math.min(1, Number(s.size) / Math.max(width, height));
+  if (s.aspect === 'original' && scale === 1) return src;
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(width * scale));
   canvas.height = Math.max(1, Math.round(height * scale));
